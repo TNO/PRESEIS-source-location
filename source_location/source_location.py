@@ -3,135 +3,195 @@ import numpy as np
 from scipy.stats import chi2
 from matplotlib.patches import Ellipse
 import pykonal
-
-def safe_inv(arg):
-    try: 
-        ret = np.linalg.inv(arg)
-    except:
-        print("unable to invert covariance matrix")
-        ret = np.full_like(arg, np.nan)
-    return ret
+from findiff import FinDiff
+from functools import cache
 
 
 def characterize_spatial_distribution(
-        residuals, 
-        covariance_matrix, 
-        prior = xr.DataArray(1), # can be an xarray structure
-        spatial_dimensions = ["x","y","z"], # specifies input
-        data_dyad = ["station_mode", "station_mode_"], # specifies input
-        coordinate_dyad = ["spatial_coordinates", "spatial_coordinates_"], # specifies output
-        verbose = False
-    ):
+    data,
+    data_covariance,
+    prior=xr.DataArray(1),  # can be an xarray structure
+    spatial_dimensions=["x", "y", "z"],
+    input_dyad=["data", "data_T"],  # specifies input axes for covariance
+    output_dyad=["space", "space_T"],  # specifies output axes for covariance
+    verbose=False,
+):
+    # STAGE 1: determine likelihood and posterior
+    if verbose:
+        print("STAGE 1: determine posterior distribution")
 
-    # STAGE 0: prep
-    # subselect relevant entries from covariance matrix
-    # this allows use of a complete covariance_matrix with a 
-    # limited set of residuals
-    res, res_T, covmat = xr.align(
-        residuals,
-        residuals.rename({data_dyad[0]: data_dyad[1]}),
-        covariance_matrix
+    # invert data covariance matrix C in data precision matrix P
+    loglikelihood, logposterior = infer_spatial_distribution(
+        data, data_covariance, prior, spatial_dimensions, input_dyad, verbose
     )
-
-    # STAGE 1: determine likelihood
-    if verbose: print("STAGE 1: determine posterior distribution")
-
-    # invert covariance matrix in precision matrix P
-    if verbose: print("...invert data covariance matrix")
-    P = xr.apply_ufunc(
-        safe_inv,
-        covmat,
-        input_core_dims = [data_dyad],
-        output_core_dims = [data_dyad],
-        exclude_dims = set(data_dyad),
-        vectorize=True
-    )
-
-    # shift residuals to weighted mean: demean
-    if verbose: print("...demean residuals")
-    P_weights = P.sum([data_dyad[1]]) / P.sum(data_dyad)
-    res_mean = res.weighted(P_weights).mean(data_dyad[0])
-    res_demean = res - res_mean
-    res_demean_T = res_demean.rename({data_dyad[0]: data_dyad[1]})
-
-    # determine squared misfit, likelihood and posterior
-    if verbose: print("...determine likelihood and posterior")
-    sqmisfit = xr.dot(res_demean_T, P, res_demean, dims=data_dyad)
-    likelihood = np.exp(-0.5 * sqmisfit).rename("likelihood")
-    posterior = (prior * likelihood).rename("posterior")
-    posterior = posterior / posterior.sum(spatial_dimensions)
 
     # STAGE 2: characterize distribution
-    if verbose: print("STAGE 2: characterize posterior distribution")
+    if verbose:
+        print("STAGE 2: characterize posterior distribution")
+
+    # find max likelihood (ML) locations
+    if verbose:
+        print("...determine maximum likelihood (ML) location and covariance")
+    loc, cov = get_spatial_point_estimate(
+        loglikelihood,
+        spatial_dimensions,
+        output_dyad,
+    )
+    location_ML = loc.rename("location_ML")
+    covariance_differential_ML = cov.rename("covariance_differential_ML")
 
     # find max a posteriori (MAP) locations
-    if verbose: print("...determine maximum a posterior (MAP) location(s)")
-    MAP_index = posterior.argmax(dim = spatial_dimensions)
-    loc = posterior.isel(MAP_index)
-    location_MAP = xr.concat(
-        [loc[dim] for dim in spatial_dimensions],
-        dim = "spatial_coordinates"
-        ).rename("location_MAP").drop(spatial_dimensions)
+    if verbose:
+        print("...determine maximum a posterior (MAP) location and covariance")
+    loc, cov = get_spatial_point_estimate(
+        logposterior,
+        spatial_dimensions,
+        output_dyad,
+    )
+    location_MAP = loc.rename("location_MAP")
+    covariance_differential_MAP = cov.rename("covariance_differential_MAP")
 
+    # determine mean and covariance, i.e., first and second order moments
+    # of spatial distribution
+    if verbose:
+        print("...determine posterior moments")
+    loc, cov = get_spatial_moments(
+        logposterior,
+        spatial_dimensions,
+        output_dyad,
+    )
+    location_mean = loc.rename("location_mean")
+    covariance_integral = cov.rename("covariance_integral")
 
-    # determine slowness at MAP
-    if verbose: print("...determine slowness vectors at MAP location(s)")
-    # (note inefficiency - calculating all slowness vectors in the volume)
-    slowness = xr.concat(
-        [res_demean.differentiate(dim) for dim in spatial_dimensions],
-        dim = "spatial_coordinates"
-        ).assign_coords({"spatial_coordinates": spatial_dimensions})
-    slowness = slowness.isel(MAP_index)\
-        .drop(spatial_dimensions)\
-        .transpose(...,"spatial_coordinates")
-    slowness_T = slowness.rename({
-        data_dyad[0]: data_dyad[1], 
-        coordinate_dyad[0]: coordinate_dyad[1]
-        })
-    
-    # translate temporal/data P into spatial P
-    if verbose: print("...determine spatial precision matrix at MAP location(s)")
-    spatial_P = xr.dot(slowness_T, P, slowness, dims=data_dyad)
-
-    # invert to obtain spatial covariance matrix
-    if verbose: print("...invert precision matrix to covariance matrix at MAP location(s)")
-    covariance_differential = xr.apply_ufunc(
-        safe_inv,
-        spatial_P,
-        input_core_dims = [coordinate_dyad],
-        output_core_dims = [coordinate_dyad],
-        exclude_dims = set(coordinate_dyad),
-        vectorize=True
-        ).rename("covariance_differential")
-    
-    # determine mean of spatial distribution
-    if verbose: print("...determine mean posterior location(s)")
-    location_mean = xr.concat(
-        [posterior[dim].weighted(posterior).mean(spatial_dimensions) for dim in spatial_dimensions],
-        dim = "spatial_coordinates"
-        ).rename("location_mean").assign_coords({"spatial_coordinates": spatial_dimensions})
-
-    # determine second order moment of spatial distribution for covariance matrix
-    if verbose: print("...second order moment / integral covariance")
-    spdims = [residuals[id] for id in spatial_dimensions]
-    distance= xr.concat(spdims, dim = "spatial_coordinates") - location_mean
-    distance_tensor = distance * distance.rename({"spatial_coordinates": "spatial_coordinates_"})
-    covariance_integral = distance_tensor.weighted(posterior).mean(spatial_dimensions)\
-        .transpose(...,*coordinate_dyad)\
-        .rename("covariance_integral")
-
-    # include list of contributing stations (for any mode)
-    active_stations = xr.full_like(residuals["station"], True).unstack().any("mode").rename("active_stations")
+    # determine active stations
+    active_stations = get_active_stations(data)
 
     # return all packaged in dataset
-    return xr.merge([
-        posterior,
-        location_MAP, 
-        covariance_differential, 
-        location_mean, 
-        covariance_integral,
-        active_stations
-        ])
+    return xr.merge(
+        [
+            loglikelihood,
+            logposterior,
+            location_ML,
+            covariance_differential_ML,
+            location_MAP,
+            covariance_differential_MAP,
+            location_mean,
+            covariance_integral,
+            active_stations,
+        ]
+    )
+
+
+def infer_spatial_distribution(
+    data, data_covariance, prior, spatial_dimensions, input_dyad, verbose
+):
+    data_precision = invert_covariance(data_covariance, input_dyad)
+
+    # shift residuals to weighted mean: demean
+    if verbose:
+        print("...demean residuals")
+    data_demean = _demean_data(data, data_precision, input_dyad)
+    data_demean_T = data_demean.rename({input_dyad[0]: input_dyad[1]})
+
+    # determine squared misfit, loglikelihood
+    if verbose:
+        print("...determine likelihood and posterior")
+    squared_misfit = xr.dot(data_demean_T, data_precision, data_demean, dims=input_dyad)
+    loglikelihood = (-0.5 * squared_misfit).rename("loglikelihood")
+
+    # determine posterior
+    # Bayes rule
+    logposterior = loglikelihood + np.log(prior)
+    total = np.exp(logposterior).sum(spatial_dimensions)
+    logposterior = logposterior - np.log(total)
+    logposterior = logposterior.rename("logposterior")
+
+    return loglikelihood, logposterior
+
+
+def get_active_stations(data):
+    stations = np.unique(data["station"].data)
+    station_status = np.full_like(stations, True, dtype=bool)
+    active_stations = xr.DataArray(
+        station_status, coords={"station": stations}, name="active_stations"
+    )
+
+    return active_stations
+
+
+def invert_covariance(data_covariance, input_dyad):
+    data_precision = xr.apply_ufunc(
+        _safe_inv,
+        data_covariance,
+        input_core_dims=[input_dyad],
+        output_core_dims=[input_dyad],
+        exclude_dims=set(input_dyad),
+        vectorize=True,
+    )
+
+    return data_precision
+
+
+def get_spatial_moments(logposterior, spatial_dimensions, output_dyad):
+    posterior = np.exp(logposterior)
+    location_mean = (
+        xr.concat(
+            [
+                posterior[dim].weighted(posterior).mean(spatial_dimensions)
+                for dim in spatial_dimensions
+            ],
+            dim=output_dyad[0],
+        )
+        .rename("location_mean")
+        .assign_coords({output_dyad[0]: spatial_dimensions})
+    )
+
+    # determine second order moment of spatial distribution for covariance matrix
+    spdims = [posterior[id] for id in spatial_dimensions]
+    distance = xr.concat(spdims, dim=output_dyad[0]) - location_mean
+    distance_tensor = distance * distance.rename({output_dyad[0]: output_dyad[1]})
+    covariance_integral = (
+        distance_tensor.weighted(posterior)
+        .mean(spatial_dimensions)
+        .transpose(..., *output_dyad)
+        .rename("covariance_integral")
+    )
+
+    return location_mean, covariance_integral
+
+
+def get_spatial_point_estimate(loglikelihood, spatial_dimensions, output_dyad):
+    # prep work for Finite Difference calculation of Hessian
+    hessian_stencil = _get_hessian_stencil(
+        loglikelihood, spatial_dimensions, output_dyad
+    )
+    space_index_dim = "space_index"
+    index = loglikelihood.argmax(dim=spatial_dimensions)
+    index_array = xr.Dataset(index).to_array(dim=space_index_dim)
+
+    data = np.exp(loglikelihood.isel(index))
+    location = (
+        xr.concat([data[dim] for dim in spatial_dimensions], dim=output_dyad[0])
+        .rename("location")
+        .drop(spatial_dimensions)
+    )
+    hessian = _calculate_hessian(
+        loglikelihood,
+        index_array,
+        hessian_stencil,
+        spatial_dimensions,
+        space_index_dim,
+    )
+    covariance_differential = xr.apply_ufunc(
+        _safe_inv,
+        -hessian,
+        input_core_dims=[output_dyad],
+        output_core_dims=[output_dyad],
+        exclude_dims=set(output_dyad),
+        vectorize=True,
+    ).rename("covariance_differential")
+
+    return location, covariance_differential
 
 
 def eikonal_solve(source_location, velocity, origin, delta):
@@ -160,16 +220,100 @@ def covariance_ellipse(centre, cov, fraction, **kwargs):
     eigvals, eigvecs = np.linalg.eigh(cov)
     order = eigvals.argsort()[::-1]
     eigvals, eigvecs = eigvals[order], eigvecs[:, order]
-    
-    # The anti-clockwise angle to rotate our ellipse by 
-    vx, vy = eigvecs[:,0][0], eigvecs[:,0][1]
+
+    # The anti-clockwise angle to rotate our ellipse by
+    vx, vy = eigvecs[:, 0][0], eigvecs[:, 0][1]
     theta = np.arctan2(vy, vx)
 
-    # width and height of ellipse to draw based on 
+    # width and height of ellipse to draw based on
     # fraction inside
     ndof = len(eigvals)
     nstd = np.sqrt(chi2.ppf(fraction, ndof))
     width, height = 2 * nstd * np.sqrt(eigvals)
 
-    return Ellipse(xy=centre, width=width, height=height,
-                   angle=np.degrees(theta), lw=1, facecolor='none', **kwargs)
+    return Ellipse(
+        xy=centre,
+        width=width,
+        height=height,
+        angle=np.degrees(theta),
+        lw=1,
+        facecolor="none",
+        **kwargs
+    )
+
+
+def _demean_data(data, data_precision, input_dyad):
+    data_weights = data_precision.sum([input_dyad[1]]) / data_precision.sum(input_dyad)
+    data_mean = data.weighted(data_weights).mean(input_dyad[0])
+    data_demean = data - data_mean
+
+    return data_demean
+
+
+def _safe_inv(arg):
+    try:
+        ret = np.linalg.inv(arg)
+    except np.linalg.LinAlgError:
+        print("unable to invert covariance matrix")
+        ret = np.full_like(arg, np.nan)
+
+    return ret
+
+
+def _hessian_FD(i, j, spacing, shape):
+    if i == j:
+        stencil = FinDiff(i, spacing[i], 2).stencil(shape)
+    else:
+        stencil = FinDiff((i, spacing[i], 1), (j, spacing[j], 1)).stencil(shape)
+
+    return stencil
+
+
+def _get_hessian_stencil(
+    data,
+    spatial_dimensions=("x", "y", "z"),
+    output_dyad=("space", "space_T"),
+):
+    spatial_shape = tuple(data[d].size for d in spatial_dimensions)
+    spacing = tuple(data[d].diff(d).mean().values.item() for d in spatial_dimensions)
+    num_dimensions = len(spatial_dimensions)
+
+    stencil_xarray = xr.DataArray(
+        _get_stencil(spatial_shape, spacing, num_dimensions),
+        coords={output_dyad[0]: spatial_dimensions, output_dyad[1]: spatial_dimensions},
+    )
+    return stencil_xarray
+
+
+@cache
+def _get_stencil(spatial_shape, spacing, nd):
+    stencil_array = [
+        [_hessian_FD(i, j, spacing, spatial_shape) for j in range(nd)]
+        for i in range(nd)
+    ]
+
+    return stencil_array
+
+
+def _apply_stencil(ar, idx, st):
+    ret = st.apply(ar, tuple(idx))
+    return ret
+
+
+def _calculate_hessian(
+    data,
+    index_array,
+    stencil_array,
+    spatial_dimensions=["x", "y", "z"],
+    index_dim="space_index",
+):
+    hessian = xr.apply_ufunc(
+        _apply_stencil,
+        data,
+        index_array,
+        stencil_array,
+        input_core_dims=[spatial_dimensions, [index_dim], []],
+        exclude_dims=set((*spatial_dimensions, index_dim)),
+        vectorize=True,
+    )
+    return hessian
