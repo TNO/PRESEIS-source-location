@@ -1,0 +1,16 @@
+name: source-location
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - ipykernel
+  - numpy
+  - xarray
+  - geopandas
+  - pyproj
+  - shapely
+  - matplotlib
+  - ca-certificates
+  - openssl
+  - findiff
+  - certifi
