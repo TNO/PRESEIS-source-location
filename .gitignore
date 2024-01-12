@@ -1,3 +1,5 @@
 **/__pycache__
 example_files/
 .env
+README_files/
+**.html
