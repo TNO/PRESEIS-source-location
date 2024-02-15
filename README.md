@@ -23,7 +23,7 @@ pip install .
 ## Usage
 
 The package provides basic functionality for computing probabilistic source location distributions based on first arrival time data.
-See [examples.ipnb](examples.ipynb) for a usage example.
+See [example.ipnb](example.ipynb) for a usage example.
 
 ## License
 
