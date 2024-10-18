@@ -11,14 +11,11 @@ A python environment can be created using conda from [environment.yml](environme
 conda env create --file environment.yml
 conda activate source-location
 ```
-
-In addition, the package [pykonal](https://github.com/malcolmw/pykonal) needs to be installed from source, i.e.:
+If there are problems with the availability of packages, it is worth trying the light enviroment file [environment-light.yml](environment-light.yml), i.e.:
 ```bash
-git clone https://github.com/malcolmw/pykonal
-cd pykonal
-pip install .
+conda env create --file environment-light.yml
+conda activate source-location
 ```
-
 
 ## Usage
 

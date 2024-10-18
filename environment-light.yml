@@ -1,0 +1,21 @@
+name: source-location
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - ca-certificates
+  - certifi
+  - findiff
+  - geopandas
+  - ipykernel
+  - matplotlib
+  - numpy
+  - openssl
+  - pip
+  - pyproj
+  - shapely
+  - xarray
+  - pip:
+    - cython==3.0.11
+    - h5py==3.12.1
+    - pykonal==0.4.1
