@@ -37,6 +37,13 @@ def characterize_spatial_distribution(
     )
     location_ML = loc.rename("location_ML")
     covariance_differential_ML = cov.rename("covariance_differential_ML")
+    determinant_differential_ML = xr.apply_ufunc(
+        np.linalg.det,
+        covariance_differential_ML,
+        input_core_dims=[output_dyad],
+        output_core_dims=[[]],
+        exclude_dims=set(output_dyad),
+    ).rename("determinant_differential_ML")
 
     # find max a posteriori (MAP) locations
     if verbose:
@@ -48,6 +55,13 @@ def characterize_spatial_distribution(
     )
     location_MAP = loc.rename("location_MAP")
     covariance_differential_MAP = cov.rename("covariance_differential_MAP")
+    determinant_differential_MAP = xr.apply_ufunc(
+        np.linalg.det,
+        covariance_differential_MAP,
+        input_core_dims=[output_dyad],
+        output_core_dims=[[]],
+        exclude_dims=set(output_dyad),
+    ).rename("determinant_differential_MAP")
 
     # determine mean and covariance, i.e., first and second order moments
     # of spatial distribution
@@ -60,6 +74,13 @@ def characterize_spatial_distribution(
     )
     location_mean = loc.rename("location_mean")
     covariance_integral = cov.rename("covariance_integral")
+    determinant_integral = xr.apply_ufunc(
+        np.linalg.det,
+        covariance_integral,
+        input_core_dims=[output_dyad],
+        output_core_dims=[[]],
+        exclude_dims=set(output_dyad),
+    ).rename("determinant_integral")
 
     # determine active stations
     active_stations = get_active_stations(data)
@@ -71,10 +92,13 @@ def characterize_spatial_distribution(
             logposterior,
             location_ML,
             covariance_differential_ML,
+            determinant_differential_ML,
             location_MAP,
             covariance_differential_MAP,
+            determinant_differential_MAP,
             location_mean,
             covariance_integral,
+            determinant_integral,
             active_stations,
         ]
     )
