@@ -1,7 +1,5 @@
 import xarray as xr
 import numpy as np
-from scipy.stats import chi2
-from matplotlib.patches import Ellipse
 import pykonal
 from findiff import FinDiff
 from functools import cache
@@ -230,40 +228,6 @@ def eikonal_solve(source_location, velocity, origin, delta):
     solver.src_loc = source_location
     solver.solve()
     return solver.traveltime.values
-
-
-def covariance_ellipse(centre, cov, fraction, **kwargs):
-    """
-    Adapted from https://scipython.com/book/chapter-7-matplotlib/examples/bmi-data-with-confidence-ellipses/
-    Return a matplotlib Ellipse patch representing the covariance matrix
-    cov centred at centre and scaled by the factor nstd.
-
-    """
-
-    # Find and sort eigenvalues and eigenvectors into descending order
-    eigvals, eigvecs = np.linalg.eigh(cov)
-    order = eigvals.argsort()[::-1]
-    eigvals, eigvecs = eigvals[order], eigvecs[:, order]
-
-    # The anti-clockwise angle to rotate our ellipse by
-    vx, vy = eigvecs[:, 0][0], eigvecs[:, 0][1]
-    theta = np.arctan2(vy, vx)
-
-    # width and height of ellipse to draw based on
-    # fraction inside
-    ndof = len(eigvals)
-    nstd = np.sqrt(chi2.ppf(fraction, ndof))
-    width, height = 2 * nstd * np.sqrt(eigvals)
-
-    return Ellipse(
-        xy=centre,
-        width=width,
-        height=height,
-        angle=np.degrees(theta),
-        lw=1,
-        facecolor="none",
-        **kwargs
-    )
 
 
 def _demean_data(data, data_precision, input_dyad):
