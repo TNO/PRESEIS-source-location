@@ -1,0 +1,46 @@
+[project]
+name = "preseis-source-location"
+version = "0.1.0"
+description = "PRESEIS source location using Bayesian spatial distribution analysis"
+authors = [
+    {name = "TNO", email = "dirk.kraaijpoel@tno.nl"}
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.20.0",
+    "xarray>=2023.1.0",
+    "pykonal>=0.3.0",
+    "findiff>=0.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["preseis.source_location"]
+
+[tool.setuptools.package-dir]
+"preseis.source_location" = "preseis/source_location"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
