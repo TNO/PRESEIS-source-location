@@ -26,9 +26,10 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["preseis.source_location"]
+packages = ["preseis", "preseis.source_location"]
 
 [tool.setuptools.package-dir]
+"preseis" = "preseis"
 "preseis.source_location" = "preseis/source_location"
 
 [tool.ruff]
