@@ -15,6 +15,16 @@ from .plot import (
     covariance_ellipse,
 )
 
+# Covariance utilities
+from .covariance import (
+    build_covariance_structure,
+    build_mode_correlation_matrix,
+    build_spatial_correlation_matrix,
+    extract_ellipse_parameters,
+    spatial_correlation_coefficient,
+    weighted_rms_residual,
+)
+
 __all__ = [
     # source_location
     "characterize_spatial_distribution",
@@ -27,4 +37,11 @@ __all__ = [
     # plot
     "source_plot_with_ellipses",
     "covariance_ellipse",
+    # covariance
+    "build_covariance_structure",
+    "build_mode_correlation_matrix",
+    "build_spatial_correlation_matrix",
+    "extract_ellipse_parameters",
+    "spatial_correlation_coefficient",
+    "weighted_rms_residual",
 ]
