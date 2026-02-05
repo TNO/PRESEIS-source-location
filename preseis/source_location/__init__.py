@@ -19,7 +19,6 @@ from .source_location import (
     demean_residuals,
     eikonal_solve,
     estimate_origin_time_correction,
-    get_active_stations,
     get_spatial_moments,
     get_spatial_point_estimate,
     infer_source_location,

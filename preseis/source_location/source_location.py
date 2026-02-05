@@ -105,7 +105,6 @@ def infer_source_location(
     data_covariance: xr.DataArray,
     prior: xr.DataArray = xr.DataArray(1),
     spatial_dimensions: list[str] = ["x", "y", "z"],
-    data_dimensions: list[str] = ["mode", "station"],
     input_dyad: list[str] = ["data", "data_T"],
     output_dyad: list[str] = ["space", "space_T"],
     verbose: bool = False,
@@ -118,9 +117,15 @@ def infer_source_location(
 
     Input Data Model
     ----------------
+    All data must be pre-stacked to a flat dimension matching input_dyad[0].
+    This simplifies the interface and allows flexible observation selection.
+
     - obs_at: Observed arrival times RELATIVE TO A REFERENCE ORIGIN TIME (t_ref).
-      Typically t_ref is from an initial catalog location or trigger time.
-    - synth_tt: Synthetic TRAVELTIMES (source-to-station propagation time).
+      Dimensions: (data,) where data indexes individual picks.
+    - synth_tt: Synthetic TRAVELTIMES for each pick at each grid point.
+      Dimensions: (x, y, z, data) - spatial dimensions + data dimension.
+    - data_covariance: Covariance matrix for the selected picks.
+      Dimensions: (data, data_T) matching input_dyad.
 
     The arrival time model is:
 
@@ -145,34 +150,23 @@ def infer_source_location(
 
     This is equivalent to "demeaning" residuals with GLS weights.
 
-    Linearity Property
-    ------------------
-    Since dt_GLS is linear in residuals:
-
-        E[dt] = dt_GLS(E[x])   (exact equality)
-
-    The posterior mean correction equals the GLS estimate at the posterior
-    mean location—no integration needed for E[dt].
-
     Parameters
     ----------
     obs_at : xr.DataArray
         Observed arrival times RELATIVE TO REFERENCE ORIGIN TIME.
-        Dimensions: (mode, station). Units should match synth_tt.
+        Dimensions: (data,) - pre-stacked flat dimension.
     synth_tt : xr.DataArray
         Synthetic TRAVELTIMES (not arrival times!).
-        Dimensions: (mode, station, x, y, z)
+        Dimensions: (x, y, z, data) - spatial dims + flat data dim.
     data_covariance : xr.DataArray
-        Covariance matrix C with dimensions (data, data_T).
+        Covariance matrix C with dimensions matching input_dyad.
         Encodes pick uncertainties and inter-pick correlations.
     prior : xr.DataArray
         Prior p(x) over spatial dimensions (default: uniform)
     spatial_dimensions : list[str]
         Names of spatial dimensions ['x', 'y', 'z']
-    data_dimensions : list[str]
-        Names of data dimensions ['mode', 'station']
     input_dyad : list[str]
-        Dimension names for covariance matrix ['data', 'data_T']
+        Dimension names for data and covariance ['data', 'data_T']
     output_dyad : list[str]
         Dimension names for spatial covariance ['space', 'space_T']
     verbose : bool
@@ -200,21 +194,18 @@ def infer_source_location(
     if verbose:
         print("Computing residuals and precision matrix...")
 
-    # Compute residuals ONCE
-    residuals = obs_at - synth_tt  # broadcasts to (mode, station, x, y, z)
+    # Compute residuals - data is already flat
+    residuals = obs_at - synth_tt  # broadcasts to (x, y, z, data)
 
-    # Compute precision matrix (inverse covariance) - used for both spatial and temporal
+    # Compute precision matrix (inverse covariance)
     data_precision = invert_covariance(data_covariance, input_dyad)
-
-    # Stack residuals for characterization
-    residuals_stacked = residuals.stack({"data": data_dimensions}).reset_index("data")
 
     if verbose:
         print("Characterizing spatial distribution...")
 
     # Get spatial distribution (with origin time marginalized out)
     spatial_result = summarize_spatial_posterior(
-        data=residuals_stacked,
+        data=residuals,
         data_covariance=data_covariance,
         prior=prior,
         spatial_dimensions=spatial_dimensions,
@@ -237,7 +228,7 @@ def infer_source_location(
     }
 
     # GLS estimate of origin time correction at MAP location
-    residuals_at_map = residuals_stacked.interp(**loc_map)
+    residuals_at_map = residuals.interp(**loc_map)
     temporal_map = estimate_origin_time_correction(
         residuals_at_map, data_precision, input_dyad[0], input_dyad[1]
     )
@@ -245,7 +236,7 @@ def infer_source_location(
     dt_map_uncertainty = 1.0 / np.sqrt(temporal_map["total_precision"])
 
     # GLS estimate at posterior mean location (= posterior mean by linearity)
-    residuals_at_mean = residuals_stacked.interp(**loc_mean)
+    residuals_at_mean = residuals.interp(**loc_mean)
     temporal_mean = estimate_origin_time_correction(
         residuals_at_mean, data_precision, input_dyad[0], input_dyad[1]
     )
@@ -253,19 +244,26 @@ def infer_source_location(
 
     # Posterior mean of origin time correction
     # By linearity: E[dt] = dt(E[x], E[y], E[z]) exactly
-    dt_posterior_mean = float(dt_at_mean)
+    dt_posterior_mean = dt_at_mean
 
     # Posterior variance requires field evaluation: Var[dt] = E[dt²] - E[dt]²
     temporal_field = estimate_origin_time_correction(
-        residuals_stacked, data_precision, input_dyad[0], input_dyad[1]
+        residuals, data_precision, input_dyad[0], input_dyad[1]
     )
     dt_field = temporal_field["origin_time_correction"]
 
     posterior = np.exp(spatial_result["logposterior"])
     posterior_norm = posterior / posterior.sum()
 
-    dt_sq_mean = float((dt_field**2 * posterior_norm).sum())
-    dt_posterior_std = float(np.sqrt(max(0, dt_sq_mean - dt_posterior_mean**2)))
+    # Stay in xarray domain: compute second moment
+    dt_sq_mean = (dt_field**2 * posterior_norm).sum()
+    # Variance: Var[dt] = E[dt²] - E[dt]², clip negative values and take sqrt
+    dt_posterior_std_da = (
+        (dt_sq_mean - dt_posterior_mean**2)
+        .clip(min=0)
+        .pipe(np.sqrt)
+        .rename("origin_time_correction_posterior_std")
+    )
 
     # Merge all results
     return xr.merge(
@@ -274,9 +272,10 @@ def infer_source_location(
             dt_map.rename("origin_time_correction_MAP"),
             dt_map_uncertainty.rename("origin_time_correction_uncertainty"),
             dt_at_mean.rename("origin_time_correction_at_mean_location"),
-            xr.DataArray(dt_posterior_mean, name="origin_time_correction_posterior_mean"),
-            xr.DataArray(dt_posterior_std, name="origin_time_correction_posterior_std"),
-        ]
+            dt_posterior_mean.rename("origin_time_correction_posterior_mean"),
+            dt_posterior_std_da,
+        ],
+        compat="override",
     )
 
 
@@ -325,7 +324,6 @@ def summarize_spatial_posterior(
         - location_mean: Posterior mean location
         - covariance_differential_*: Hessian-based covariance at ML/MAP
         - covariance_integral: Posterior covariance from second moments
-        - active_stations: Which stations contributed data
     """
     # STAGE 1: determine likelihood and posterior
     if verbose:
@@ -395,9 +393,6 @@ def summarize_spatial_posterior(
         exclude_dims=set(output_dyad),
     ).rename("determinant_integral")
 
-    # determine active stations
-    active_stations = get_active_stations(data)
-
     # return all packaged in dataset
     return xr.merge(
         [
@@ -412,7 +407,6 @@ def summarize_spatial_posterior(
             location_mean,
             covariance_integral,
             determinant_integral,
-            active_stations,
         ]
     )
 
@@ -476,16 +470,6 @@ def compute_marginal_likelihood(
     logposterior = logposterior.rename("logposterior")
 
     return loglikelihood, logposterior
-
-
-def get_active_stations(data):
-    stations = np.unique(data["station"].data)
-    station_status = np.full_like(stations, True, dtype=bool)
-    active_stations = xr.DataArray(
-        station_status, coords={"station": stations}, name="active_stations"
-    )
-
-    return active_stations
 
 
 def invert_covariance(data_covariance, input_dyad):
@@ -643,7 +627,7 @@ def _get_hessian_stencil(
     output_dyad=("space", "space_T"),
 ):
     spatial_shape = tuple(data[d].size for d in spatial_dimensions)
-    spacing = tuple(data[d].diff(d).mean().values.item() for d in spatial_dimensions)
+    spacing = tuple(float(data[d].diff(d).mean()) for d in spatial_dimensions)
     num_dimensions = len(spatial_dimensions)
 
     stencil_xarray = xr.DataArray(

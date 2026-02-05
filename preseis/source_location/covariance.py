@@ -182,6 +182,13 @@ def extract_ellipse_parameters(
     sigma_y = np.sqrt(cov_matrix[1, 1])
     sigma_z = np.sqrt(cov_matrix[2, 2])
 
+    # Check for finite covariance matrix
+    if not np.isfinite(cov_matrix).all():
+        raise ValueError(
+            "Covariance matrix contains non-finite values (NaN or inf). "
+            "This may indicate numerical issues in the source location calculation."
+        )
+
     # Analyze horizontal uncertainty ellipse (x, y submatrix)
     cov_xy = cov_matrix[:2, :2]
     eigenvalues, eigenvectors = np.linalg.eig(cov_xy)
