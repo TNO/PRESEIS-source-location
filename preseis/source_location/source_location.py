@@ -407,7 +407,8 @@ def summarize_spatial_posterior(
             location_mean,
             covariance_integral,
             determinant_integral,
-        ]
+        ],
+        compat="no_conflicts",
     )
 
 
@@ -600,6 +601,73 @@ def demean_residuals(data, data_precision, input_dyad):
     data_demean = data - gls_mean
 
     return data_demean
+
+
+def compute_correlated_fit_metrics(
+    residuals: xr.DataArray,
+    data_covariance: xr.DataArray,
+    input_dyad: list[str] = ["data", "data_T"],
+    n_fitted_mean_parameters: int = 1,
+) -> xr.Dataset:
+    """Compute covariance-aware fit diagnostics for residual vectors.
+
+    This evaluates the same correlated quadratic form used in the inversion,
+    after analytically removing the optimal GLS common-mode shift. The result is
+    useful for reporting a whitened RMS or reduced misfit that respects both
+    spatial and inter-mode correlations.
+
+    Parameters
+    ----------
+    residuals : xr.DataArray
+        Residual vector or field with a data dimension matching input_dyad[0].
+    data_covariance : xr.DataArray
+        Covariance matrix with dimensions matching input_dyad.
+    input_dyad : list[str]
+        Dimension names for the residual and covariance data axes.
+    n_fitted_mean_parameters : int
+        Number of fitted common-mode mean parameters removed before reporting the
+        reduced misfit. For the current source-location workflow this is 1,
+        corresponding to the marginalized origin-time shift.
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with:
+        - squared_misfit: correlated quadratic form $\tilde r^T P \tilde r$
+        - n_observations: number of finite residual rows
+        - degrees_of_freedom: max(n_observations - n_fitted_mean_parameters, 1)
+        - reduced_squared_misfit: squared_misfit / degrees_of_freedom
+        - whitened_rms: sqrt(reduced_squared_misfit)
+    """
+    data_precision = invert_covariance(data_covariance, input_dyad)
+    residuals_demean = demean_residuals(residuals, data_precision, input_dyad)
+    residuals_demean_t = residuals_demean.rename({input_dyad[0]: input_dyad[1]})
+
+    squared_misfit = xr.dot(
+        residuals_demean_t,
+        data_precision,
+        residuals_demean,
+        dims=input_dyad,
+    ).rename("squared_misfit")
+    n_observations = residuals.count(dim=input_dyad[0]).rename("n_observations")
+    degrees_of_freedom = (
+        (n_observations - int(n_fitted_mean_parameters)).clip(min=1)
+    ).rename("degrees_of_freedom")
+    reduced_squared_misfit = (squared_misfit / degrees_of_freedom).rename(
+        "reduced_squared_misfit"
+    )
+    whitened_rms = np.sqrt(reduced_squared_misfit).rename("whitened_rms")
+
+    return xr.merge(
+        [
+            squared_misfit,
+            n_observations,
+            degrees_of_freedom,
+            reduced_squared_misfit,
+            whitened_rms,
+        ],
+        compat="no_conflicts",
+    )
 
 
 def _safe_inv(arg):

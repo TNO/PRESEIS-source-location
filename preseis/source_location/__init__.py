@@ -15,6 +15,7 @@ from .plot import (
     source_plot_with_ellipses,
 )
 from .source_location import (
+    compute_correlated_fit_metrics,
     compute_marginal_likelihood,
     demean_residuals,
     eikonal_solve,
@@ -33,6 +34,7 @@ __all__ = [
     # source_location
     "estimate_origin_time_correction",
     "summarize_spatial_posterior",
+    "compute_correlated_fit_metrics",
     "compute_marginal_likelihood",
     "demean_residuals",
     "infer_source_location",
