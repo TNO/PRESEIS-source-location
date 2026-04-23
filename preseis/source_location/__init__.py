@@ -27,8 +27,14 @@ from .source_location import (
     summarize_spatial_posterior,
 )
 
-# Travel time computation
-from .traveltimes import compute_traveltimes
+# Travel time computation and velocity grid helpers
+from .traveltimes import (
+    assemble_event_traveltimes,
+    compute_and_cache_station,
+    compute_traveltimes,
+    sample_velocity_grid,
+    station_cache_path,
+)
 
 __all__ = [
     # source_location
@@ -55,4 +61,8 @@ __all__ = [
     "weighted_rms_residual",
     # traveltimes
     "compute_traveltimes",
+    "station_cache_path",
+    "compute_and_cache_station",
+    "sample_velocity_grid",
+    "assemble_event_traveltimes",
 ]

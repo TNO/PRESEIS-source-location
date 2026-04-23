@@ -177,10 +177,10 @@ def extract_ellipse_parameters(
         - 'azimuth': Azimuth of major axis (degrees from north, clockwise)
         - 'rms_horizontal': RMS horizontal uncertainty
     """
-    # Standard deviations
-    sigma_x = np.sqrt(cov_matrix[0, 0])
-    sigma_y = np.sqrt(cov_matrix[1, 1])
-    sigma_z = np.sqrt(cov_matrix[2, 2])
+    # Standard deviations (clamp diagonal to ≥ 0 against numerical noise)
+    sigma_x = np.sqrt(max(0.0, cov_matrix[0, 0]))
+    sigma_y = np.sqrt(max(0.0, cov_matrix[1, 1]))
+    sigma_z = np.sqrt(max(0.0, cov_matrix[2, 2]))
 
     # Check for finite covariance matrix
     if not np.isfinite(cov_matrix).all():
@@ -197,6 +197,9 @@ def extract_ellipse_parameters(
     idx = eigenvalues.argsort()[::-1]
     eigenvalues = eigenvalues[idx]
     eigenvectors = eigenvectors[:, idx]
+
+    # Clamp eigenvalues to ≥ 0 to avoid NaN from tiny negative values (numerical noise)
+    eigenvalues = np.maximum(eigenvalues.real, 0.0)
 
     # Semi-axes of uncertainty ellipse (1-sigma)
     semi_major = np.sqrt(eigenvalues[0])
