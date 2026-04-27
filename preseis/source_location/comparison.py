@@ -71,6 +71,7 @@ class SourceLocationMethodSpec:
 
 METHOD_COLORS = {
     "step0_baseline": "#1f1f1f",
+    "step0_P_only": "#8c564b",
     "step1_phase_only": "#1f77b4",
     "step2_additive": "#ff7f0e",
     "step3_shrinkage": "#2ca02c",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -339,11 +340,43 @@ def _estimate_shrinkage_interaction_terms(
     return interaction_summary, prior_variances
 
 
+def _filter_degenerate_events(
+    used_df: pd.DataFrame,
+    *,
+    max_per_event_mean_residual_s: float = 10.0,
+    max_per_event_std_residual_s: float = 50.0,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Remove events with degenerate MAP locations from the calibration frame.
+
+    Events whose per-event mean residual exceeds ``max_per_event_mean_residual_s``
+    or whose per-event residual standard deviation exceeds
+    ``max_per_event_std_residual_s`` have converged to a grid-boundary or otherwise
+    physically impossible MAP solution.  Their residuals are hundreds of seconds
+    rather than fractions of a second, and including them would corrupt the
+    phase/station delay estimates.
+    """
+    if "event_id" not in used_df.columns:
+        return used_df, []
+
+    per_event = used_df.groupby("event_id")["residual_s"].agg(["mean", "std"])
+    degenerate_mask = (per_event["mean"].abs() > max_per_event_mean_residual_s) | (
+        per_event["std"] > max_per_event_std_residual_s
+    )
+    degenerate_events = per_event.index[degenerate_mask].tolist()
+    if degenerate_events:
+        clean_df = used_df.loc[~used_df["event_id"].isin(degenerate_events)].copy()
+    else:
+        clean_df = used_df
+    return clean_df, degenerate_events
+
+
 def analyze_residual_calibration(
     residual_df: pd.DataFrame,
     *,
     current_mode_correlation_coefficient: float = 0.2,
     min_mode_correlation_pair_count: int = 5,
+    max_per_event_mean_residual_s: float = 10.0,
+    max_per_event_std_residual_s: float = 50.0,
 ) -> dict[str, pd.DataFrame]:
     """Build calibration summaries from residual report exports."""
     if residual_df.empty:
@@ -353,6 +386,23 @@ def analyze_residual_calibration(
     used_df = observed_df.loc[observed_df["used_in_inference"]].copy()
     if used_df.empty:
         raise ValueError("No residual rows were used in inference")
+
+    used_df, degenerate_events = _filter_degenerate_events(
+        used_df,
+        max_per_event_mean_residual_s=max_per_event_mean_residual_s,
+        max_per_event_std_residual_s=max_per_event_std_residual_s,
+    )
+    if degenerate_events:
+        warnings.warn(
+            f"Excluded {len(degenerate_events)} degenerate event(s) from residual "
+            f"calibration (|per-event mean| > {max_per_event_mean_residual_s} s or "
+            f"per-event std > {max_per_event_std_residual_s} s): "
+            + ", ".join(degenerate_events),
+            UserWarning,
+            stacklevel=2,
+        )
+    if used_df.empty:
+        raise ValueError("No residual rows remain after filtering degenerate events")
 
     current_z = used_df["residual_s"] / used_df["sigma_s"]
     global_option_summary = pd.DataFrame(

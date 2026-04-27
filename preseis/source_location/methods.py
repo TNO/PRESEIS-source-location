@@ -18,9 +18,26 @@ class SourceLocationCalibrationMethod:
     learning_inventory_scope: str
     calibration_enabled: bool
     input_calibration_dirname: str | None = None
+    allowed_phases: tuple[str, ...] | None = None  # None = all phases
 
 
 _METHODS = (
+    SourceLocationCalibrationMethod(
+        key="step0_P_only",
+        label="Step 0 - P-only baseline (diagnostic)",
+        step=0,
+        output_dirname="source_location_step0_P_only",
+        delay_strategy="none",
+        sigma_strategy="current",
+        mode_correlation_strategy="current",
+        learning_inventory_scope=(
+            "No calibration. Only P arrivals are used; S picks are masked before "
+            "inference. Diagnostic run to assess the contribution of uncalibrated "
+            "S arrivals to location bias."
+        ),
+        calibration_enabled=False,
+        allowed_phases=("P",),
+    ),
     SourceLocationCalibrationMethod(
         key="step0_baseline",
         label="Step 0 - Baseline (uncalibrated)",
@@ -88,6 +105,9 @@ _METHODS = (
 _METHODS_BY_KEY = {method.key: method for method in _METHODS}
 _METHODS_BY_OUTPUT_DIRNAME = {method.output_dirname: method for method in _METHODS}
 _METHOD_ALIASES = {
+    "step0_p_only": "step0_P_only",
+    "p_only": "step0_P_only",
+    "p-only": "step0_P_only",
     "baseline": "step0_baseline",
     "none": "step0_baseline",
     "step0": "step0_baseline",
@@ -111,6 +131,7 @@ _METHODS_BY_STRATEGY = {
         method.mode_correlation_strategy,
     ): method
     for method in _METHODS
+    if method.allowed_phases is None  # exclude phase-restricted variants
 }
 
 
@@ -320,6 +341,14 @@ def apply_source_location_method_config(
     calibration_cfg["output_calibration_dir"] = str(
         default_method_output_calibration_dir(output_dir)
     )
+
+    # Phase filter: propagate allowed_phases from the method into uncertainty config
+    uncertainty_cfg = source_location_cfg.setdefault("uncertainty", {})
+    if method.allowed_phases is not None:
+        uncertainty_cfg["allowed_phases"] = list(method.allowed_phases)
+    else:
+        uncertainty_cfg.pop("allowed_phases", None)
+
     return method
 
 
