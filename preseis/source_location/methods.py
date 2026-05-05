@@ -220,14 +220,10 @@ def expand_source_location_execution_method_keys(
 
 def infer_source_location_method(
     *,
-    calibration_enabled: bool,
     delay_strategy: Any = None,
     sigma_strategy: Any = None,
     mode_correlation_strategy: Any = None,
 ) -> SourceLocationCalibrationMethod:
-    if not calibration_enabled:
-        return get_source_location_method("step0_baseline")
-
     strategy_key = (
         str(delay_strategy or "none"),
         str(sigma_strategy or "current"),
@@ -261,7 +257,6 @@ def resolve_source_location_method(
             return get_source_location_method(str(methods[-1]))
 
     return infer_source_location_method(
-        calibration_enabled=bool(calibration_cfg.get("enabled", False)),
         delay_strategy=calibration_cfg.get("delay_strategy"),
         sigma_strategy=calibration_cfg.get("sigma_strategy"),
         mode_correlation_strategy=calibration_cfg.get("mode_correlation_strategy"),

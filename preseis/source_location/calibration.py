@@ -340,6 +340,82 @@ def _estimate_shrinkage_interaction_terms(
     return interaction_summary, prior_variances
 
 
+def _shrink_station_delay_terms(
+    station_terms: dict[str, float],
+    used_df: pd.DataFrame,
+    phase_sigma: dict[str, float],
+) -> tuple[dict[str, float], pd.DataFrame]:
+    """Apply empirical-Bayes shrinkage to OLS per-station delay terms.
+
+    Mirrors :func:`_estimate_shrinkage_interaction_terms` at the station
+    main-effect level.  For station *s* with *n_s* observations across all
+    phases, the observation variance is
+
+        σ²_obs(s) = mean_obs(σ²_phase) / n_s
+
+    where σ_phase is the empirical phase sigma passed in via *phase_sigma*.
+    The between-station prior variance is estimated by the method-of-moments
+    estimator
+
+        τ̂² = max(0, mean_s(b_s² − σ²_obs(s)))
+
+    and each raw OLS station term is shrunk toward zero as
+
+        b̂_s = κ_s · b_s,   κ_s = τ² / (τ² + σ²_obs(s)).
+
+    When the between-station signal (τ²) is small compared with the estimation
+    noise (σ²_obs), κ approaches 0 and the correction is suppressed.  When the
+    signal dominates, κ approaches 1 and the full OLS term is retained.  This
+    naturally keeps large, well-supported S-wave station corrections while
+    zeroing out noisy P-wave corrections that carry no real signal.
+    """
+    phase_sigma_sq: dict[str, float] = {
+        phase: float(sigma) ** 2 for phase, sigma in phase_sigma.items()
+    }
+    rows = []
+    for station, sub in used_df.groupby("station"):
+        n = int(len(sub))
+        per_obs_sigma_sq = sub["phase"].astype(str).map(phase_sigma_sq)
+        mean_obs_var = float(per_obs_sigma_sq.mean()) / max(n, 1)
+        raw_term = float(station_terms.get(str(station), 0.0))
+        rows.append(
+            {
+                "station": str(station),
+                "n_station": n,
+                "raw_station_delay_s": raw_term,
+                "station_obs_variance_s2": mean_obs_var,
+            }
+        )
+
+    summary = pd.DataFrame(rows)
+    if summary.empty:
+        return {}, summary
+
+    raw = summary["raw_station_delay_s"].to_numpy(dtype=float)
+    obs_var = summary["station_obs_variance_s2"].to_numpy(dtype=float)
+    tau_sq = float(np.nanmean(np.square(raw) - obs_var))
+    if not np.isfinite(tau_sq) or tau_sq < 0.0:
+        tau_sq = 0.0
+
+    summary["station_shrinkage_prior_variance_s2"] = tau_sq
+    denom = tau_sq + obs_var
+    summary["station_shrinkage_factor"] = np.where(
+        np.isfinite(denom) & (denom > 0.0),
+        tau_sq / denom,
+        0.0,
+    )
+    summary["shrunken_station_delay_s"] = (
+        summary["raw_station_delay_s"] * summary["station_shrinkage_factor"]
+    )
+    shrunken_terms: dict[str, float] = dict(
+        zip(
+            summary["station"].astype(str),
+            summary["shrunken_station_delay_s"].astype(float),
+        )
+    )
+    return shrunken_terms, summary
+
+
 def _filter_degenerate_events(
     used_df: pd.DataFrame,
     *,
@@ -455,6 +531,13 @@ def analyze_residual_calibration(
 
     additive_phase_terms, station_delay_terms = _fit_additive_delay_terms(used_df)
 
+    phase_sigma_empirical = phase_summary.set_index("phase")[
+        "empirical_sigma_s"
+    ].to_dict()
+    shrunken_station_delay_terms, station_shrinkage_info = _shrink_station_delay_terms(
+        station_delay_terms, used_df, phase_sigma_empirical
+    )
+
     phase_calibrated = used_df.copy()
     phase_calibrated["phase_delay_term_s"] = phase_calibrated["phase"].map(
         phase_delay_map
@@ -518,6 +601,19 @@ def analyze_residual_calibration(
     station_summary["station_delay_term_s"] = station_summary["station"].map(
         station_delay_terms
     )
+    if not station_shrinkage_info.empty:
+        station_summary = station_summary.merge(
+            station_shrinkage_info[
+                ["station", "station_shrinkage_factor", "shrunken_station_delay_s"]
+            ],
+            on="station",
+            how="left",
+        )
+    else:
+        station_summary["station_shrinkage_factor"] = float("nan")
+        station_summary["shrunken_station_delay_s"] = station_summary[
+            "station_delay_term_s"
+        ]
     additive_station_residual_mean = (
         used_additive.groupby("station")["additive_residual_s"].mean().to_dict()
     )
@@ -575,7 +671,7 @@ def analyze_residual_calibration(
 
     station_phase_summary["full_shrinkage_delay_term_s"] = (
         station_phase_summary["phase"].map(additive_phase_terms)
-        + station_phase_summary["station"].map(station_delay_terms)
+        + station_phase_summary["station"].map(shrunken_station_delay_terms)
         + station_phase_summary["shrunken_interaction_term_s"]
     )
 
@@ -1179,11 +1275,21 @@ def load_calibration_model(calibration_dir: Path) -> SourceLocationCalibrationMo
         for row in phase_df.to_dict("records")
         if pd.notna(row.get("additive_phase_term_s"))
     }
-    station_delay_terms = {
-        str(row["station"]): float(row["station_delay_term_s"])
-        for row in station_df.to_dict("records")
-        if pd.notna(row.get("station_delay_term_s"))
-    }
+    station_delay_terms = {}
+    for row in station_df.to_dict("records"):
+        station = str(row["station"])
+        # Prefer the shrunken term written by the current calibration run;
+        # fall back to the raw OLS term for files written by older versions.
+        delay: float | None = None
+        shrunken = row.get("shrunken_station_delay_s")
+        if shrunken is not None and pd.notna(shrunken):
+            delay = float(shrunken)
+        else:
+            raw = row.get("station_delay_term_s")
+            if raw is not None and pd.notna(raw):
+                delay = float(raw)
+        if delay is not None:
+            station_delay_terms[station] = delay
     station_phase_interaction_terms = {
         (str(row["station"]), str(row["phase"])): float(
             row["shrunken_interaction_term_s"]
